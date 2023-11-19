@@ -85,7 +85,7 @@ class ScriptBrowserEnv(Env[dict[str, Observation], Action]):
     def __init__(
         self,
         max_page_length: int = 8192,
-        headless: bool = True,
+        headless = True,
         slow_mo: int = 0,
         observation_type: str = "html",
         current_viewport_only: bool = False,
@@ -206,10 +206,11 @@ class ScriptBrowserEnv(Env[dict[str, Observation], Action]):
         geolocation = instance_config.get("geolocation", None)
 
         self.context = self.browser.new_context(
-            viewport=self.viewport_size,
+            # viewport=self.viewport_size,
+            # no_viewport=True,
             storage_state=storage_state,
             geolocation=geolocation,
-            device_scale_factor=1,
+            # device_scale_factor=1,
         )
         if self.save_trace_enabled:
             self.context.tracing.start(screenshots=True, snapshots=True)
@@ -264,7 +265,7 @@ class ScriptBrowserEnv(Env[dict[str, Observation], Action]):
     def _get_obs(self) -> dict[str, Observation]:
         for i in range(5):
             obs = self.observation_handler.get_observation(
-                self.page, self.get_page_client(self.page)
+                self.page, self.get_page_client(self.page), self.context
             )
             if "busy: 1" in obs['text']:
                 logger.warning(f"Accessibility tree is too small, retrying {i}: {obs['text']}")
@@ -403,7 +404,8 @@ class ScriptBrowserEnv(Env[dict[str, Observation], Action]):
             "fail_error": fail_error,
             "observation_metadata": observation_metadata,
             "log_history": self.omnitools_webpage.log_history,
-            "has_finished": self.omnitools_webpage.has_finished
+            "has_successfully_completed": self.omnitools_webpage.has_successfully_completed,
+            "has_failed": self.omnitools_webpage.has_failed,
         }
         msg = (
             observation,

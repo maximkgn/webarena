@@ -14,6 +14,7 @@ from playwright.sync_api import CDPSession, Page, ViewportSize
 
 logger = logging.getLogger(__name__)
 marked_elements = {}
+node_id_to_unique_id = defaultdict(dict)
 
 from browser_env.constants import (
     ASCII_CHARSET,
@@ -61,7 +62,6 @@ class TextObervationProcessor(ObservationProcessor):
             create_empty_metadata()
         )  # use the store meta data of this observation type
 
-    @beartype
     def fetch_browser_info(
         self,
         page: Page,
@@ -94,7 +94,7 @@ class TextObervationProcessor(ObservationProcessor):
         win_right_bound = win_left_bound + win_width
         win_lower_bound = win_upper_bound + win_height
         device_pixel_ratio = page.evaluate("window.devicePixelRatio")
-        assert device_pixel_ratio == 1.0, "devicePixelRatio is not 1.0"
+        # assert device_pixel_ratio == 1.0, "devicePixelRatio is not 1.0"
 
         config: BrowserConfig = {
             "win_upper_bound": win_upper_bound,
@@ -285,12 +285,12 @@ class TextObervationProcessor(ObservationProcessor):
         )["nodes"]
 
         # query first node
-        client.send(
-            "Accessibility.queryAXTree",
-            {
-                'backendNodeId': int(accessibility_tree[0]['backendDOMNodeId'])
-            }
-        )
+        # client.send( # TODOREMOVE why this gets stuck????
+        #     "Accessibility.queryAXTree",
+        #     {
+        #         'backendNodeId': int(accessibility_tree[0]['backendDOMNodeId'])
+        #     }
+        # )
 
         # a few nodes are repeated in the accessibility tree
         seen_ids = set()
@@ -484,7 +484,7 @@ class TextObervationProcessor(ObservationProcessor):
     @beartype
     @staticmethod
     def parse_accessibility_tree(
-        accessibility_tree: AccessibilityTree, multi_roots: bool
+        accessibility_tree: AccessibilityTree, multi_roots: bool, frame
     ) -> tuple[str, dict[str, Any]]:
         """Parse the accessibility tree into a string text"""
         node_id_to_idx = {}
@@ -509,7 +509,11 @@ class TextObervationProcessor(ObservationProcessor):
             try:
                 role = node["role"]["value"]
                 name = node["name"]["value"]
-                node_str = f"[{obs_node_id}] {role} {repr(name)}"
+                global node_id_to_unique_id
+                unique_id = node_id_to_unique_id[frame].get(obs_node_id, "")
+                if not name.strip() and unique_id != "":
+                    name = "clickable"
+                node_str = f"[{unique_id}] {role} {repr(name)}"
                 properties = []
                 for property in node.get("properties", []):
                     try:
@@ -545,6 +549,7 @@ class TextObervationProcessor(ObservationProcessor):
                             "listitem",
                         ]:
                             valid_node = False
+
                     elif role in ["listitem"]:
                         valid_node = False
 
@@ -601,7 +606,7 @@ class TextObervationProcessor(ObservationProcessor):
 
     @beartype
     @staticmethod
-    def clean_accesibility_tree(tree_str: str, clean_ids: bool = True) -> str:
+    def clean_accesibility_tree(tree_str: str, clean_ids: bool = False) -> str:
         """further clean accesibility tree"""
         clean_lines: list[str] = []
         for line in tree_str.split("\n"):
@@ -629,7 +634,7 @@ class TextObervationProcessor(ObservationProcessor):
         return "\n".join(clean_lines)
 
     @beartype
-    def process(self, page: Page, client: CDPSession) -> str:
+    def process(self, page: Page, client: CDPSession, context) -> str:
         # get the tab info
         open_tabs = page.context.pages
         try:
@@ -664,19 +669,46 @@ class TextObervationProcessor(ObservationProcessor):
             else:
                 content = page.content()
         elif self.observation_type == "accessibility_tree":
-            accessibility_tree = self.fetch_page_accessibility_tree(
-                browser_info, client
-            )
-            use_active_elem_as_bbox = False
-            multi_roots = use_active_elem_as_bbox
-            if self.current_viewport_only:
-                accessibility_tree = self.current_viewport_accessibility_tree(
-                    browser_info, accessibility_tree, page, use_active_elem_as_bbox=use_active_elem_as_bbox,
+            content = ""
+            obs_nodes_info = {}
+
+            for frame in page.frames:
+                try: 
+                    client_frame = context.new_cdp_session(frame)
+                    browser_info = self.fetch_browser_info(frame, client_frame)
+                except:
+                    continue
+
+                accessibility_tree_frame = self.fetch_page_accessibility_tree(
+                    browser_info, client_frame
                 )
-            content, obs_nodes_info = self.parse_accessibility_tree(
-                accessibility_tree, multi_roots=multi_roots
-            )
-            content = self.clean_accesibility_tree(content)
+                if not accessibility_tree_frame:
+                    continue
+
+                nodes_marked_in_frame = node_id_to_unique_id[frame].keys()
+                nodes_in_frame = [node['nodeId'] for node in accessibility_tree_frame]
+                num_nodes_marked = len(set(nodes_marked_in_frame) & set(nodes_in_frame)) 
+                if num_nodes_marked == 0:
+                    logger.info(f"No marked nodes in frame {frame.name or frame.url}, skipping")
+                    continue
+                
+                use_active_elem_as_bbox = False # expiment in limiting the accessibility tree to the active element
+                multi_roots = use_active_elem_as_bbox
+                if self.current_viewport_only:
+                    accessibility_tree_frame = self.current_viewport_accessibility_tree(
+                        browser_info, accessibility_tree_frame, page, use_active_elem_as_bbox=use_active_elem_as_bbox,
+                    )
+                    if not accessibility_tree_frame:
+                        continue
+                content_frame, obs_nodes_info_frame = self.parse_accessibility_tree(
+                    accessibility_tree_frame, multi_roots, frame
+                )
+                content_frame = self.clean_accesibility_tree(content_frame)
+                content_frame = content_frame.split("\n")  # Add frame name to root node of the tree 
+                content_frame = content_frame[0] + str(frame) + "\n" + "\n".join(content_frame[1:])
+
+                content += content_frame
+                obs_nodes_info = {**obs_nodes_info, **obs_nodes_info_frame}
             self.obs_nodes_info = obs_nodes_info
             self.meta_data["obs_nodes_info"] = obs_nodes_info
         else:
@@ -722,30 +754,8 @@ class ImageObservationProcessor(ObservationProcessor):
     
 
 class ImageObservationProcessorWithSetOfMarks(ImageObservationProcessor):
-
-    def place_som(self, page: Page):
-        with open("omnitool/mark_borders.js", 'r') as file:
-            js_script = file.read()
-        global marked_elements
-        def run_script_in_frame(frame, counter):
-            modified_script = js_script.replace('let counter = 0;', f'let counter = {counter};')
-            return frame.evaluate(modified_script)
-        marked_elements = []
-        counter = 0
-        marked_elements_main = run_script_in_frame(page.main_frame, counter)
-        marked_elements.extend(marked_elements_main)
-        counter += len(marked_elements_main)
-        # Iterate over each iframe and run the script
-        for frame in page.frames:
-            if frame != page.main_frame:  # Skip the main frame as it's already processed
-                marked_elements_iframe = run_script_in_frame(frame, counter)
-                marked_elements.extend(marked_elements_iframe)
-                counter += len(marked_elements_iframe)
-        # Convert to a dictionary with IDs as keys
-        marked_elements_dict = {element['id']: element for element in marked_elements}
-        return marked_elements_dict
     
-    def place_som(self, page: Page):
+    def place_som(self, page: Page, client: CDPSession, context):
         # Read the JavaScript script from the file
         with open("omnitool/mark_borders.js", 'r') as file:
             js_script = file.read()
@@ -762,25 +772,93 @@ class ImageObservationProcessorWithSetOfMarks(ImageObservationProcessor):
 
             return elements
 
-        # Initialize variables
         marked_elements = []
         counter = 0
-
-        # Process the main frame
-        marked_elements_main = run_script_in_frame(page.main_frame, counter, iframe_name='main')
-        marked_elements.extend(marked_elements_main)
-        counter += len(marked_elements_main)
-
-        # Iterate over each iframe and run the script
+        
+        # Iterate overeach iframe and run the script
+        unique_ids_in_tree = {}
+        assert page.main_frame in page.frames
         for frame in page.frames:
-            if frame != page.main_frame:  # Skip the main frame as it's already processed
-                iframe_name = frame.name or frame.url  # Use the frame's name or URL as an identifier
-                marked_elements_iframe = run_script_in_frame(frame, counter, iframe_name=iframe_name)
-                marked_elements.extend(marked_elements_iframe)
-                counter += len(marked_elements_iframe)
+            iframe_name = frame.name or frame.url  # Use the frame's name or URL as an identifier
+            marked_elements_iframe = run_script_in_frame(frame, counter, iframe_name=iframe_name)
+            marked_elements.extend(marked_elements_iframe)
+            counter += len(marked_elements_iframe)
+
+            try:
+                client_frame = context.new_cdp_session(frame)
+            except:
+                if len(marked_elements_iframe) > 0:
+                    logger.warning(f"Found marked elements in frame {iframe_name} but could not get CDP session")
+                continue
+            
+            # Get accessibility items for each marked element
+            accessibility_tree: AccessibilityTree = client_frame.send(
+                "Accessibility.getFullAXTree", {}
+            )["nodes"]
+            accessibility_tree_w_uniqueid = [item for item in accessibility_tree if 'uniqueid__' in str(item)]
+            uniqueid_pattern = re.compile(r'uniqueid__(\d+)__')
+            for ax_item in accessibility_tree_w_uniqueid:
+                name = ax_item['name']['value']
+                match = uniqueid_pattern.search(name)
+                unique_id = int(match.group(1))
+                unique_ids_in_tree[unique_id] = (ax_item, frame)
+
+            xpaths_array = ','.join([f'"{elem["xpath"]}"' for elem in marked_elements_iframe])
+            labels_array = ','.join([f'"{elem["old_aria_label"]}"' for elem in marked_elements_iframe])
+            frame.evaluate(f'''
+            (function() {{
+                const xpaths = [{xpaths_array}];
+                const oldLabels = [{labels_array}];
+                xpaths.forEach((xpath, index) => {{
+                    const element = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                    if (element) {{
+                        const oldLabel = oldLabels[index];
+                        if (oldLabel != 'None') {{
+                            element.setAttribute('aria-label', oldLabel);
+                        }} else {{
+                            element.removeAttribute('aria-label');
+                        }}
+                    }}
+                }});
+            }})();
+            ''')
+
+
+
+
 
         # Convert to a dictionary with IDs as keys
         marked_elements_dict = {element['id']: element for element in marked_elements}
+
+        # Add accessibility tree items to the marked elements dictionary
+        for unique_id, (ax_item, frame) in unique_ids_in_tree.items():
+            marked_elements_dict[unique_id]['ax_item'] = ax_item
+        
+        # create nodeID to uniqueID mapping
+        global node_id_to_unique_id
+        node_id_to_unique_id = defaultdict(dict)
+        for unique_id, (ax_item, frame) in unique_ids_in_tree.items():
+            node_id_to_unique_id[frame][ax_item['nodeId']] = unique_id # TODOREMOVE save with frame to avoid collision
+
+
+        #     role = node["role"]["value"]
+        #     name = node["name"]["value"]
+        #     node_str = f"{role} {repr(name)}"
+        #     properties = []
+        #     for property in node.get("properties", []):
+        #         try:
+        #             if property["name"] in IGNORED_ACTREE_PROPERTIES:
+        #                 continue
+        #             properties.append(
+        #                 f'{property["name"]}: {property["value"]["value"]}'
+        #             )
+        #         except KeyError:
+        #                 pass
+        #         if properties:
+        #             node_str += " " + " ".join(properties)
+        #     marked_elements_dict[unique_id]['node_str'] = node_str
+
+        
         return marked_elements_dict
 
     def remove_som(self, page: Page):
@@ -795,11 +873,13 @@ class ImageObservationProcessorWithSetOfMarks(ImageObservationProcessor):
         for frame in page.frames:
             if frame != page.main_frame:  # Skip the main frame as it's already processed
                 run_removal_script_in_frame(frame)
- 
-    def process(self, page: Page, client: CDPSession) -> npt.NDArray[np.uint8]:
+
+    def process(self, page: Page, client: CDPSession, context) -> npt.NDArray[np.uint8]:
         global marked_elements
-        marked_elements = self.place_som(page)
-        screenshot = super().process(page, client)q
+        marked_elements = self.place_som(page, client, context)
+        # import asyncio
+
+        screenshot = super().process(page, client)
         self.remove_som(page)
         return screenshot
 
@@ -853,13 +933,12 @@ class ObservationHandler:
 
     @beartype
     def get_observation(
-        self, page: Page, client: CDPSession
+        self, page: Page, client: CDPSession, context
     ) -> dict[str, Observation]:
-        text_obs = self.text_processor.process(page, client)
-        res = {"text": text_obs}
+        res = {}
         if self.use_image:
-            image_obs = self.image_processor.process(page, client)
-            res["image"] = image_obs
+            res["image"] = self.image_processor.process(page, client, context)
+        res["text"] = self.text_processor.process(page, client, context)
         return res
 
     @beartype

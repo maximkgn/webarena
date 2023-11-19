@@ -27,7 +27,7 @@ class AsyncScriptBrowserEnv(Env[npt.NDArray[np.uint8], Action]):
     def __init__(
         self,
         max_page_length: int = 2048,
-        headless: bool = True,
+        headless = True,
         slow_mo: int = 0,
         timeout: int = 30000,
         viewport_size: ViewportSize = {"width": 1280, "height": 720},
