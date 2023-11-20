@@ -1279,7 +1279,15 @@ def execute_action(
         case ActionTypes.EXECUTE_SCRIPT:
             code = action["raw_script_code"]
             context = {"webpage": omnitools_webpage}
-            exec(code, context, context)
+            try:
+                exec(code, context, context)
+            except Exception as e:
+                import traceback
+                exc_type, exc_value, exc_tb = traceback.sys.exc_info()
+                code_lines = code.split('\n')
+                line_number = exc_tb.tb_lineno - 4
+                line_of_code = code_lines[line_number - 1]
+                raise Exception(f"Error in execution of script. At line: \"{line_of_code.lstrip()}\". Error: \"{e}\"")
         case _:
             raise ValueError(f"Unknown action type: {action_type}")
 

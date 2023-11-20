@@ -285,7 +285,7 @@ class TextObervationProcessor(ObservationProcessor):
         )["nodes"]
 
         # query first node
-        # client.send( # TODOREMOVE why this gets stuck????
+        # client.send( # TODOREMOVE why this gets stuck in frames that are not the main frame????
         #     "Accessibility.queryAXTree",
         #     {
         #         'backendNodeId': int(accessibility_tree[0]['backendDOMNodeId'])
@@ -484,7 +484,7 @@ class TextObervationProcessor(ObservationProcessor):
     @beartype
     @staticmethod
     def parse_accessibility_tree(
-        accessibility_tree: AccessibilityTree, multi_roots: bool, frame
+        accessibility_tree: AccessibilityTree, multi_roots: bool, frame, client
     ) -> tuple[str, dict[str, Any]]:
         """Parse the accessibility tree into a string text"""
         node_id_to_idx = {}
@@ -553,6 +553,12 @@ class TextObervationProcessor(ObservationProcessor):
                     elif role in ["listitem"]:
                         valid_node = False
 
+                if role == 'IframePresentational':  
+                    html = client.send("DOM.getOuterHTML", {"backendNodeId": node['backendDOMNodeId']})['outerHTML']
+                    iframe_name = re.search(r'name="([^"]+)"', html).group(1)
+                    # Add iframe name to the node representing string
+                    node_str += f" {repr(iframe_name)}"
+
                 if valid_node:
                     tree_str += f"{indent}{node_str}"
                     obs_nodes_info[obs_node_id] = {
@@ -569,6 +575,11 @@ class TextObervationProcessor(ObservationProcessor):
                 valid_node = False
 
             count_num_invalid_nodes[0] += 1 - int(valid_node)
+            if role == 'MenuListPopup' and len(node['childIds']) > 10:
+                # Declutter the accessibility tree from many options
+                tree_str += f"{indent}... ({len(node['childIds'])} options)"
+                return tree_str
+
             for _, child_node_id in enumerate(node["childIds"]):
                 if child_node_id not in node_id_to_idx:
                     continue
@@ -689,7 +700,7 @@ class TextObervationProcessor(ObservationProcessor):
                 nodes_in_frame = [node['nodeId'] for node in accessibility_tree_frame]
                 num_nodes_marked = len(set(nodes_marked_in_frame) & set(nodes_in_frame)) 
                 if num_nodes_marked == 0:
-                    logger.info(f"No marked nodes in frame {frame.name or frame.url}, skipping")
+                    logger.debug(f"No marked nodes in frame {frame.name or frame.url}, skipping")
                     continue
                 
                 use_active_elem_as_bbox = False # expiment in limiting the accessibility tree to the active element
@@ -701,11 +712,13 @@ class TextObervationProcessor(ObservationProcessor):
                     if not accessibility_tree_frame:
                         continue
                 content_frame, obs_nodes_info_frame = self.parse_accessibility_tree(
-                    accessibility_tree_frame, multi_roots, frame
+                    accessibility_tree_frame, multi_roots, frame, client_frame
                 )
                 content_frame = self.clean_accesibility_tree(content_frame)
-                content_frame = content_frame.split("\n")  # Add frame name to root node of the tree 
-                content_frame = content_frame[0] + str(frame) + "\n" + "\n".join(content_frame[1:])
+                content_frame += "\n"
+                if frame.name:
+                    content_frame = content_frame.split("\n")  # Add frame name to root node of the tree 
+                    content_frame = content_frame[0] + str(frame.name) + "\n" + "\n".join(content_frame[1:]) + "\n"
 
                 content += content_frame
                 obs_nodes_info = {**obs_nodes_info, **obs_nodes_info_frame}
@@ -838,7 +851,7 @@ class ImageObservationProcessorWithSetOfMarks(ImageObservationProcessor):
         global node_id_to_unique_id
         node_id_to_unique_id = defaultdict(dict)
         for unique_id, (ax_item, frame) in unique_ids_in_tree.items():
-            node_id_to_unique_id[frame][ax_item['nodeId']] = unique_id # TODOREMOVE save with frame to avoid collision
+            node_id_to_unique_id[frame][ax_item['nodeId']] = unique_id
 
 
         #     role = node["role"]["value"]
@@ -857,6 +870,29 @@ class ImageObservationProcessorWithSetOfMarks(ImageObservationProcessor):
         #         if properties:
         #             node_str += " " + " ".join(properties)
         #     marked_elements_dict[unique_id]['node_str'] = node_str
+
+
+
+        # always show scroller for the page
+        css_to_inject = """
+            /* This CSS ensures that scrollbars are always shown */
+            html {
+                overflow-y: scroll;
+            }
+            body {
+                overflow-y: scroll;
+            }
+            ::-webkit-scrollbar {
+                -webkit-appearance: none;
+                width: 7px;
+            }
+            ::-webkit-scrollbar-thumb {
+                border-radius: 4px;
+                background-color: rgba(0,0,0,.5);
+                box-shadow: 0 0 1px rgba(255,255,255,.5);
+            }
+        """       # Inject CSS into the page
+        page.add_style_tag(content=css_to_inject)
 
         
         return marked_elements_dict

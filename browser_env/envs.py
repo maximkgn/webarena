@@ -206,11 +206,11 @@ class ScriptBrowserEnv(Env[dict[str, Observation], Action]):
         geolocation = instance_config.get("geolocation", None)
 
         self.context = self.browser.new_context(
-            # viewport=self.viewport_size,
+            viewport=self.viewport_size,
             # no_viewport=True,
             storage_state=storage_state,
             geolocation=geolocation,
-            # device_scale_factor=1,
+            device_scale_factor=1,
         )
         if self.save_trace_enabled:
             self.context.tracing.start(screenshots=True, snapshots=True)
