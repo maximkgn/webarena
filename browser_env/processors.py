@@ -912,11 +912,21 @@ class ImageObservationProcessorWithSetOfMarks(ImageObservationProcessor):
 
     def process(self, page: Page, client: CDPSession, context) -> npt.NDArray[np.uint8]:
         global marked_elements
-        marked_elements = self.place_som(page, client, context)
+        try:
+            marked_elements = self.place_som(page, client, context)
+        except:
+            import time
+            time.sleep(3) # TODOREMOVE?
+            marked_elements = self.place_som(page, client, context)
         # import asyncio
 
         screenshot = super().process(page, client)
-        self.remove_som(page)
+        try:
+            self.remove_som(page)
+        except:
+            import time
+            time.sleep(3) # TODOREMOVE?
+            self.remove_som(page)
         return screenshot
 
 

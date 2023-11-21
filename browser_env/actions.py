@@ -1283,11 +1283,18 @@ def execute_action(
                 exec(code, context, context)
             except Exception as e:
                 import traceback
-                exc_type, exc_value, exc_tb = traceback.sys.exc_info()
-                code_lines = code.split('\n')
-                line_number = exc_tb.tb_lineno - 4
-                line_of_code = code_lines[line_number - 1]
-                raise Exception(f"Error in execution of script. At line: \"{line_of_code.lstrip()}\". Error: \"{e}\"")
+                # Extract exception line number and rethrow it with it
+                _, _, exc_tb = traceback.sys.exc_info()
+                main_func = code.split('\n')[-1].split('(')[0]  # expecting code to end in call to main function to be executed
+                while exc_tb is not None:
+                    frame = exc_tb.tb_frame
+                    lineno = exc_tb.tb_lineno
+                    if frame.f_code.co_name == main_func and frame.f_code.co_filename == "<string>":
+                        line_of_code = code.split('\n')[lineno - 1].lstrip()
+                        raise Exception(f"Error in execution of script. At line: \"{line_of_code}\". Error: \"{e}\"")
+                    exc_tb = exc_tb.tb_next
+
+                raise Exception(f"Unknown line. Error: {e}")
         case _:
             raise ValueError(f"Unknown action type: {action_type}")
 
