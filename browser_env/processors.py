@@ -813,6 +813,8 @@ class ImageObservationProcessorWithSetOfMarks(ImageObservationProcessor):
             for ax_item in accessibility_tree_w_uniqueid:
                 name = ax_item['name']['value']
                 match = uniqueid_pattern.search(name)
+                if match is None:
+                    continue
                 unique_id = int(match.group(1))
                 unique_ids_in_tree[unique_id] = (ax_item, frame)
 
