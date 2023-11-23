@@ -776,7 +776,13 @@ class ImageObservationProcessorWithSetOfMarks(ImageObservationProcessor):
         def run_script_in_frame(frame, counter, iframe_name=None):
             # Modify the script to start with the specific counter
             modified_script = js_script.replace('let counter = 0;', f'let counter = {counter};')
-            elements = frame.evaluate(modified_script)
+
+            try:
+                elements = frame.evaluate(modified_script)
+            except Exception as e:
+                # log exception
+                logger.warning(f"Exception while running script in frame {iframe_name}: {e}")
+                elements = []
 
             # Add iframe origin information to each element
             for element in elements:
@@ -808,33 +814,35 @@ class ImageObservationProcessorWithSetOfMarks(ImageObservationProcessor):
             accessibility_tree: AccessibilityTree = client_frame.send(
                 "Accessibility.getFullAXTree", {}
             )["nodes"]
-            accessibility_tree_w_uniqueid = [item for item in accessibility_tree if 'uniqueid__' in str(item)]
-            uniqueid_pattern = re.compile(r'uniqueid__(\d+)__')
+            accessibility_tree_w_uniqueid = [item for item in accessibility_tree if 'item_id__' in str(item)]
+            uniqueid_pattern = re.compile(r'item_id_(\d+)_')
             for ax_item in accessibility_tree_w_uniqueid:
                 name = ax_item['name']['value']
                 match = uniqueid_pattern.search(name)
+                if match is None:
+                    continue
                 unique_id = int(match.group(1))
                 unique_ids_in_tree[unique_id] = (ax_item, frame)
 
             xpaths_array = ','.join([f'"{elem["xpath"]}"' for elem in marked_elements_iframe])
             labels_array = ','.join([f'"{elem["old_aria_label"]}"' for elem in marked_elements_iframe])
-            frame.evaluate(f'''
-            (function() {{
-                const xpaths = [{xpaths_array}];
-                const oldLabels = [{labels_array}];
-                xpaths.forEach((xpath, index) => {{
-                    const element = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-                    if (element) {{
-                        const oldLabel = oldLabels[index];
-                        if (oldLabel != 'None') {{
-                            element.setAttribute('aria-label', oldLabel);
-                        }} else {{
-                            element.removeAttribute('aria-label');
-                        }}
-                    }}
-                }});
-            }})();
-            ''')
+            # frame.evaluate(f'''
+            # (function() {{
+            #     const xpaths = [{xpaths_array}];
+            #     const oldLabels = [{labels_array}];
+            #     xpaths.forEach((xpath, index) => {{
+            #         const element = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            #         if (element) {{
+            #             const oldLabel = oldLabels[index];
+            #             if (oldLabel != 'None') {{
+            #                 element.setAttribute('aria-label', oldLabel);
+            #             }} else {{
+            #                 element.removeAttribute('aria-label');
+            #             }}
+            #         }}
+            #     }});
+            # }})();
+            # ''')
 
 
 
@@ -903,7 +911,12 @@ class ImageObservationProcessorWithSetOfMarks(ImageObservationProcessor):
             js_script = file.read()
         
         def run_removal_script_in_frame(frame):
-            return frame.evaluate(js_script)
+            try:
+                return frame.evaluate(js_script)
+            except Exception as e:
+                if "Target closed" in str(e):
+                    return 
+                
         run_removal_script_in_frame(page.main_frame)
         # Iterate over each iframe and run the removal script
         for frame in page.frames:
